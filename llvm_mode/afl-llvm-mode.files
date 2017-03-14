@@ -1,0 +1,3 @@
+afl-clang-fast.c
+afl-llvm-pass.so.cc
+afl-llvm-rt.o.c
