@@ -29,12 +29,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <iostream>
+
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/IR/DebugInfo.h"
 
 using namespace llvm;
 
@@ -105,10 +108,10 @@ bool AFLCoverage::runOnModule(Module &M) {
   /* Instrument all the things! */
 
   int inst_blocks = 0;
+  DenseMap<const BasicBlock*, unsigned int> afl_bb_ids;
 
   for (auto &F : M)
     for (auto &BB : F) {
-
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
 
@@ -117,6 +120,8 @@ bool AFLCoverage::runOnModule(Module &M) {
       /* Make up cur_loc */
 
       unsigned int cur_loc = R(MAP_SIZE);
+      const BasicBlock* bb_ptr = &BB;
+      afl_bb_ids.insert(std::make_pair(bb_ptr, cur_loc));
 
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
 
@@ -150,6 +155,30 @@ bool AFLCoverage::runOnModule(Module &M) {
       inst_blocks++;
 
     }
+
+  // dump cfg edges
+  for (auto &F : M) {
+    for (auto &BB : F) {
+        BasicBlock& bb = BB;
+        const BasicBlock* bb_ptr = &BB;
+        auto pred_id = afl_bb_ids.lookup(bb_ptr);
+        TerminatorInst* term = bb.getTerminator();
+        const DebugLoc& dd = term->getDebugLoc();
+        for(BasicBlock* suc : term->successors()) {
+          auto suc_id = afl_bb_ids.lookup(suc);
+          std::cout << term->getOpcodeName() << ","
+                    << pred_id << "," << suc_id << ",";
+          if(dd) {
+            auto* scope = cast<DIScope>(dd.getScope());
+            std::cout << dd.getLine() << "," << dd.getCol() << ","
+                      << scope->getFilename().str();
+          } else {
+            std::cout << "?,?,?";
+          }
+          std::cout << std::endl;
+        }
+    }
+  }
 
   /* Say something nice. */
 
