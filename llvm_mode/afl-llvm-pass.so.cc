@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include <iostream>
+#include <fstream>
 
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/IRBuilder.h"
@@ -63,6 +64,27 @@ namespace {
 
 char AFLCoverage::ID = 0;
 
+static inline void dump_loc(std::ostream& out, const char* name, const DebugLoc& dd) {
+  if(!dd) { return; }
+  auto* scope = cast<DIScope>(dd.getScope());
+  out << ", \"" << name << "\": { \"file\": \"" << scope->getFilename().str()
+      << "\", \"line\": " << dd.getLine()
+      << ", \"column\": " << dd.getCol() << " }";
+}
+
+
+static inline void dump_branch(std::ostream& out, const BasicBlock& bb, const unsigned int cur_loc) {
+  out << "{ \"type\": \"bb\", ";
+  out << "\"id\": " << cur_loc;
+  dump_loc(out, "begin", bb.getInstList().begin()->getDebugLoc());
+  dump_loc(out, "end", bb.getTerminator()->getDebugLoc());
+  out << "}" << std::endl;
+}
+
+static inline void dump_edge(std::ostream& out, const unsigned int pred_id, const unsigned int suc_id) {
+  out << "{ \"type\": \"edge\", \"pred_id\": " << pred_id << ", \"suc_id\": " << suc_id << " }" << std::endl;
+}
+
 
 bool AFLCoverage::runOnModule(Module &M) {
 
@@ -94,6 +116,9 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   }
 
+  // TODO: chose better file name
+  std::ofstream branch_info("branch.info");
+
   /* Get globals for the SHM region and the previous location. Note that
      __afl_prev_loc is thread-local. */
 
@@ -122,7 +147,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       unsigned int cur_loc = R(MAP_SIZE);
       const BasicBlock* bb_ptr = &BB;
       afl_bb_ids.insert(std::make_pair(bb_ptr, cur_loc));
-
+      dump_branch(branch_info, BB, cur_loc);
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
 
       /* Load prev_loc */
@@ -163,22 +188,13 @@ bool AFLCoverage::runOnModule(Module &M) {
         const BasicBlock* bb_ptr = &BB;
         auto pred_id = afl_bb_ids.lookup(bb_ptr);
         TerminatorInst* term = bb.getTerminator();
-        const DebugLoc& dd = term->getDebugLoc();
         for(BasicBlock* suc : term->successors()) {
           auto suc_id = afl_bb_ids.lookup(suc);
-          std::cout << term->getOpcodeName() << ","
-                    << pred_id << "," << suc_id << ",";
-          if(dd) {
-            auto* scope = cast<DIScope>(dd.getScope());
-            std::cout << dd.getLine() << "," << dd.getCol() << ","
-                      << scope->getFilename().str();
-          } else {
-            std::cout << "?,?,?";
-          }
-          std::cout << std::endl;
+          dump_edge(branch_info, pred_id, suc_id);
         }
     }
   }
+  branch_info.close();
 
   /* Say something nice. */
 
