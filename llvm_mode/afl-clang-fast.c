@@ -32,10 +32,9 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 
 static u8*  obj_path;               /* Path to runtime libraries         */
-static u8** cc_params;              /* Parameters passed to the real CC  */
-static u32  cc_par_cnt = 1;         /* Param count, including argv0      */
 
 
 /* Try to find the runtime libraries. If that fails, abort. */
@@ -94,12 +93,13 @@ static void find_obj(u8* argv0) {
 
 /* Copy argv to cc_params, making the necessary edits. */
 
-static void edit_params(u32 argc, char** argv) {
+static u8** edit_params(u32 argc, char** argv, int make_bitcode) {
+  u32  cc_par_cnt = 1; // Param count, including argv0
 
   u8 fortify_set = 0, asan_set = 0, x_set = 0, maybe_linking = 1, bit_mode = 0;
   u8 *name;
 
-  cc_params = ck_alloc((argc + 128) * sizeof(u8*));
+  u8** cc_params = ck_alloc((argc + 128) * sizeof(u8*));
 
   name = strrchr(argv[0], '/');
   if (!name) name = argv[0]; else name++;
@@ -136,8 +136,12 @@ static void edit_params(u32 argc, char** argv) {
 
   if (argc == 1 && !strcmp(argv[1], "-v")) maybe_linking = 0;
 
+  char* output = "program";
   while (--argc) {
     u8* cur = *(++argv);
+
+    if (!strcmp(cur, "-o") && make_bitcode)
+      argv[1] = alloc_printf("%s.bc", argv[1]);
 
     if (!strcmp(cur, "-m32")) bit_mode = 32;
     if (!strcmp(cur, "-m64")) bit_mode = 64;
@@ -160,6 +164,8 @@ static void edit_params(u32 argc, char** argv) {
     cc_params[cc_par_cnt++] = cur;
 
   }
+
+  printf("output: %s\n", output);
 
   if (getenv("AFL_HARDEN")) {
 
@@ -211,6 +217,12 @@ static void edit_params(u32 argc, char** argv) {
     cc_params[cc_par_cnt++] = "-O3";
     cc_params[cc_par_cnt++] = "-funroll-loops";
 
+  }
+
+  if(make_bitcode) {
+    // TODO: what if -c is already specified?
+    cc_params[cc_par_cnt++] = "-c";
+    cc_params[cc_par_cnt++] = "-emit-llvm";
   }
 
   if (getenv("AFL_NO_BUILTIN")) {
@@ -305,7 +317,7 @@ static void edit_params(u32 argc, char** argv) {
   }
 
   cc_params[cc_par_cnt] = NULL;
-
+  return cc_params;
 }
 
 
@@ -344,14 +356,45 @@ int main(int argc, char** argv) {
 
   }
 
-
   find_obj(argv[0]);
 
-  edit_params(argc, argv);
+#if 0
+  printf("original call:\n>");
+  for(int ii = 0; ii < argc; ii++) {
+    printf(" %s", argv[ii]);
+  }
+  printf("\n\n");
+#endif
 
-  execvp(cc_params[0], (char**)cc_params);
+  u8** cc_params = edit_params(argc, argv, 0);
 
-  FATAL("Oops, failed to execute '%s' - check your PATH", cc_params[0]);
+#if 0
+  printf("modified call:\n> %s", cc_params[0]);
+  int ii = 1;
+  while(cc_params[ii] != NULL) {
+    printf(" %s", cc_params[ii]);
+    ii++;
+  }
+  printf("\n\n");
+#endif
+
+  pid_t pid = fork();
+  if (pid == -1) {
+    FATAL("Oops, failed to fork.");
+  } else if (pid == 0) {
+    // compile to binary
+    execvp(cc_params[0], (char**)cc_params);
+    FATAL("Oops, failed to execute '%s' - check your PATH", cc_params[0]);
+  } else {
+    int status;
+    waitpid(pid, &status, 0);
+  }
+
+  // compile to llvm ir
+  u8** bc_params = edit_params(argc, argv, 1);
+  execvp(bc_params[0], (char**)bc_params);
+
+  FATAL("Oops, failed to execute '%s' - check your PATH", bc_params[0]);
 
   return 0;
 
