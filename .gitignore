@@ -20,3 +20,8 @@ afl-llvm-rt.o
 # editors
 *.user
 *~
+
+# bitcode
+afl-llvm-rt.o.bc
+llvm_mode/test-instr.bc
+
