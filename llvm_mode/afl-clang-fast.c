@@ -93,10 +93,12 @@ static void find_obj(u8* argv0) {
 
 /* Copy argv to cc_params, making the necessary edits. */
 
-static u8** edit_params(u32 argc, char** argv, int make_bitcode) {
+typedef struct { u8** cc_params; u8 print; } params;
+
+static params edit_params(u32 argc, char** argv, int make_bitcode) {
   u32  cc_par_cnt = 1; // Param count, including argv0
 
-  u8 fortify_set = 0, asan_set = 0, x_set = 0, maybe_linking = 1, bit_mode = 0;
+  u8 fortify_set = 0, asan_set = 0, x_set = 0, maybe_linking = 1, bit_mode = 0, print = 0;
   u8 *name;
 
   u8** cc_params = ck_alloc((argc + 128) * sizeof(u8*));
@@ -136,7 +138,6 @@ static u8** edit_params(u32 argc, char** argv, int make_bitcode) {
 
   if (argc == 1 && !strcmp(argv[1], "-v")) maybe_linking = 0;
 
-  char* output = "program";
   while (--argc) {
     u8* cur = *(++argv);
 
@@ -158,14 +159,18 @@ static u8** edit_params(u32 argc, char** argv, int make_bitcode) {
 
     if (!strcmp(cur, "-shared")) maybe_linking = 0;
 
+    if (!strcmp(cur, "-print-prog-name=ld") ||
+        !strcmp(cur, "-print-search-dirs")  ||
+        !strcmp(cur, "-print-multi-os-directory") ||
+        !strcmp(cur, "--version") ||
+        !strcmp(cur, "-V")) print = 1;
+
     if (!strcmp(cur, "-Wl,-z,defs") ||
         !strcmp(cur, "-Wl,--no-undefined")) continue;
 
     cc_params[cc_par_cnt++] = cur;
 
   }
-
-  printf("output: %s\n", output);
 
   if (getenv("AFL_HARDEN")) {
 
@@ -317,7 +322,11 @@ static u8** edit_params(u32 argc, char** argv, int make_bitcode) {
   }
 
   cc_params[cc_par_cnt] = NULL;
-  return cc_params;
+
+  params pp;
+  pp.cc_params = cc_params;
+  pp.print = print;
+  return pp;
 }
 
 
@@ -359,14 +368,16 @@ int main(int argc, char** argv) {
   find_obj(argv[0]);
 
 #if 0
-  printf("original call:\n>");
+  FILE* fp = fopen("log.txt", "a");
+  fprintf(fp, "original call:\n>");
   for(int ii = 0; ii < argc; ii++) {
-    printf(" %s", argv[ii]);
+    fprintf(fp, " %s", argv[ii]);
   }
-  printf("\n\n");
+  fprintf(fp, "\n\n");
+  fclose(fp);
 #endif
 
-  u8** cc_params = edit_params(argc, argv, 0);
+  u8** cc_params = edit_params(argc, argv, 0).cc_params;
 
 #if 0
   printf("modified call:\n> %s", cc_params[0]);
@@ -391,10 +402,12 @@ int main(int argc, char** argv) {
   }
 
   // compile to llvm ir
-  u8** bc_params = edit_params(argc, argv, 1);
-  execvp(bc_params[0], (char**)bc_params);
-
-  FATAL("Oops, failed to execute '%s' - check your PATH", bc_params[0]);
+  params pp = edit_params(argc, argv, 1);
+  if(!pp.print) {
+    u8** bc_params = pp.cc_params;
+    execvp(bc_params[0], (char**)bc_params);
+    FATAL("Oops, failed to execute '%s' - check your PATH", bc_params[0]);
+  }
 
   return 0;
 
