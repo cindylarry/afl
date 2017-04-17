@@ -39,7 +39,6 @@
 using namespace llvm;
 
 namespace {
-
   class AFLCoverage : public ModulePass {
 
     public:
@@ -49,12 +48,14 @@ namespace {
 
       bool runOnModule(Module &M) override;
 
+      /// make sure that we only seed once
+      bool seeded = false;
+
       // StringRef getPassName() const override {
       //  return "American Fuzzy Lop Instrumentation";
       // }
 
   };
-
 }
 
 
@@ -62,6 +63,16 @@ char AFLCoverage::ID = 0;
 
 
 bool AFLCoverage::runOnModule(Module &M) {
+  if(!seeded) {
+    char* random_seed_str = getenv("AFL_RANDOM_SEED");
+    if(random_seed_str != NULL) {
+      unsigned int seed;
+      sscanf(random_seed_str, "%u", &seed);
+      srandom(seed);
+      //SAYF("seeded with %u\n", seed);
+      seeded = true;
+    }
+  }
 
   LLVMContext &C = M.getContext();
 

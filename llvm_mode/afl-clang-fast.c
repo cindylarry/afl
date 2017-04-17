@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <sys/time.h>
 
 static u8*  obj_path;               /* Path to runtime libraries         */
 
@@ -364,6 +365,15 @@ int main(int argc, char** argv) {
     exit(1);
 
   }
+
+  // initialize random seed similar to afl-as
+  struct timeval tv;
+  struct timezone tz;
+  gettimeofday(&tv, &tz);
+  const unsigned int rand_seed = tv.tv_sec ^ tv.tv_usec ^ getpid();
+  char rand_seed_str[20];
+  snprintf(rand_seed_str, 20, "%u", rand_seed);
+  setenv("AFL_RANDOM_SEED", rand_seed_str, 1);
 
   find_obj(argv[0]);
 
