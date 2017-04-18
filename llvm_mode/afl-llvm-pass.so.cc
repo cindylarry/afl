@@ -74,6 +74,8 @@ bool AFLCoverage::runOnModule(Module &M) {
     }
   }
 
+  const bool just_annotate = (getenv("AFL_JUST_ANNOTATE") != NULL);
+
   LLVMContext &C = M.getContext();
 
   IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
@@ -119,7 +121,6 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   for (auto &F : M)
     for (auto &BB : F) {
-
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
 
@@ -131,32 +132,39 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
 
-      /* Load prev_loc */
+      if(just_annotate) {
+        auto meta_loc = MDNode::get(C, ConstantAsMetadata::get(CurLoc));
+        BB.getInstList().begin()->setMetadata("afl_cur_loc", meta_loc);
+        BB.getTerminator()->setMetadata("afl_cur_loc", meta_loc);
+      } else {
+        /* Load prev_loc */
 
-      LoadInst *PrevLoc = IRB.CreateLoad(AFLPrevLoc);
-      PrevLoc->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      Value *PrevLocCasted = IRB.CreateZExt(PrevLoc, IRB.getInt32Ty());
+        LoadInst *PrevLoc = IRB.CreateLoad(AFLPrevLoc);
+        PrevLoc->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        Value *PrevLocCasted = IRB.CreateZExt(PrevLoc, IRB.getInt32Ty());
 
-      /* Load SHM pointer */
+        /* Load SHM pointer */
 
-      LoadInst *MapPtr = IRB.CreateLoad(AFLMapPtr);
-      MapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      Value *MapPtrIdx =
-          IRB.CreateGEP(MapPtr, IRB.CreateXor(PrevLocCasted, CurLoc));
+        LoadInst *MapPtr = IRB.CreateLoad(AFLMapPtr);
+        MapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        Value *MapPtrIdx =
+            IRB.CreateGEP(MapPtr, IRB.CreateXor(PrevLocCasted, CurLoc));
 
-      /* Update bitmap */
+        /* Update bitmap */
 
-      LoadInst *Counter = IRB.CreateLoad(MapPtrIdx);
-      Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      Value *Incr = IRB.CreateAdd(Counter, ConstantInt::get(Int8Ty, 1));
-      IRB.CreateStore(Incr, MapPtrIdx)
-          ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        LoadInst *Counter = IRB.CreateLoad(MapPtrIdx);
+        Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        Value *Incr = IRB.CreateAdd(Counter, ConstantInt::get(Int8Ty, 1));
+        IRB.CreateStore(Incr, MapPtrIdx)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
-      /* Set prev_loc to cur_loc >> 1 */
+          /* Set prev_loc to cur_loc >> 1 */
 
-      StoreInst *Store =
-          IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
-      Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        StoreInst *Store =
+            IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
+        Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+      }
 
       inst_blocks++;
 

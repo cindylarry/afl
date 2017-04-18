@@ -415,6 +415,7 @@ int main(int argc, char** argv) {
   params pp = edit_params(argc, argv, 1);
   if(!pp.print) {
     u8** bc_params = pp.cc_params;
+    setenv("AFL_JUST_ANNOTATE", "1", 1);
     execvp(bc_params[0], (char**)bc_params);
     FATAL("Oops, failed to execute '%s' - check your PATH", bc_params[0]);
   }
