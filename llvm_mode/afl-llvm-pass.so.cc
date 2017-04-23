@@ -36,6 +36,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
+#define AFL_LOG_BASIC_BLOCKS
+
 using namespace llvm;
 
 namespace {
@@ -78,8 +80,13 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   LLVMContext &C = M.getContext();
 
-  IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
   IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
+#ifdef AFL_LOG_BASIC_BLOCKS
+  IntegerType *Int16Ty = IntegerType::getInt16Ty(C);
+  IntegerType *Int64Ty = IntegerType::getInt64Ty(C);
+#else
+  IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
+#endif
 
   /* Show a banner */
 
@@ -104,6 +111,12 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   }
 
+#ifdef AFL_LOG_BASIC_BLOCKS
+  assert(MAP_SIZE <= MAP_SIZE);
+  GlobalVariable *AFLIdPtr =
+      new GlobalVariable(M, PointerType::get(Int16Ty, 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_id_ptr");
+#else
   /* Get globals for the SHM region and the previous location. Note that
      __afl_prev_loc is thread-local. */
 
@@ -114,6 +127,7 @@ bool AFLCoverage::runOnModule(Module &M) {
   GlobalVariable *AFLPrevLoc = new GlobalVariable(
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
       0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+#endif
 
   /* Instrument all the things! */
 
@@ -130,13 +144,49 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       unsigned int cur_loc = R(MAP_SIZE);
 
+#ifdef AFL_LOG_BASIC_BLOCKS
+      ConstantInt *CurLoc = ConstantInt::get(Int16Ty, cur_loc);
+#else
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
+#endif
 
       if(just_annotate) {
         auto meta_loc = MDNode::get(C, ConstantAsMetadata::get(CurLoc));
         BB.getInstList().begin()->setMetadata("afl_cur_loc", meta_loc);
         BB.getTerminator()->setMetadata("afl_cur_loc", meta_loc);
       } else {
+
+#ifdef AFL_LOG_BASIC_BLOCKS
+        // this instrumentation logs the basic block ids (cur_loc) to an array
+        //   %2 = load i32*, i32** @id_ptr, align 8, !tbaa !1
+        //   store i32 %0, i32* %2, align 4, !tbaa !5
+        //   %3 = getelementptr inbounds i32, i32* %2, i64 1
+        //   store i32* %3, i32** @id_ptr, align 8, !tbaa !1
+
+        // load id_ptr
+        LoadInst* IdPtr = IRB.CreateLoad(AFLIdPtr);
+        IdPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+        // store id
+        IRB.CreateStore(CurLoc, IdPtr)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+        // increment id_ptr
+        Value* NewIdPtr = IRB.CreateGEP(IdPtr, ConstantInt::get(Int64Ty, 1));
+
+        // store incremented id_ptr
+        IRB.CreateStore(NewIdPtr, AFLIdPtr)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+#else
+        //   %27 = load i32, i32* @__afl_prev_loc, !dbg !30, !nosanitize !2
+        //   %28 = load i8*, i8** @__afl_area_ptr, !dbg !30, !nosanitize !2
+        //   %29 = xor i32 %27, 33851, !dbg !30
+        //   %30 = getelementptr i8, i8* %28, i32 %29, !dbg !30
+        //   %31 = load i8, i8* %30, !dbg !30, !nosanitize !2
+        //   %32 = add i8 %31, 1, !dbg !30
+        //   store i8 %32, i8* %30, !dbg !30, !nosanitize !2
+        //   store i32 16925, i32* @__afl_prev_loc, !dbg !30, !nosanitize !2
+
         /* Load prev_loc */
 
         LoadInst *PrevLoc = IRB.CreateLoad(AFLPrevLoc);
@@ -163,7 +213,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         StoreInst *Store =
             IRB.CreateStore(ConstantInt::get(Int32Ty, cur_loc >> 1), AFLPrevLoc);
         Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-
+#endif
       }
 
       inst_blocks++;
