@@ -153,7 +153,6 @@ bool AFLCoverage::runOnModule(Module &M) {
       if(just_annotate) {
         auto meta_loc = MDNode::get(C, ConstantAsMetadata::get(CurLoc));
         BB.getInstList().begin()->setMetadata("afl_cur_loc", meta_loc);
-        BB.getTerminator()->setMetadata("afl_cur_loc", meta_loc);
       } else {
 
 #ifdef AFL_LOG_BASIC_BLOCKS
