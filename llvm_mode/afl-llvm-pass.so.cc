@@ -80,11 +80,11 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   LLVMContext &C = M.getContext();
 
-  IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
 #ifdef AFL_LOG_BASIC_BLOCKS
   IntegerType *Int16Ty = IntegerType::getInt16Ty(C);
   IntegerType *Int64Ty = IntegerType::getInt64Ty(C);
 #else
+  IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
   IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
 #endif
 

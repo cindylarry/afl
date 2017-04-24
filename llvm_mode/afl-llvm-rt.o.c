@@ -85,6 +85,7 @@ static void __afl_map_shm(void) {
        our parent doesn't give up on us. */
 
     __afl_area_ptr[0] = 1;
+    __afl_id_ptr = (u16*)__afl_area_ptr;
 
   }
 
