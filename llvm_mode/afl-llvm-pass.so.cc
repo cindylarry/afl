@@ -112,21 +112,25 @@ bool AFLCoverage::runOnModule(Module &M) {
   }
 
 #ifdef AFL_LOG_BASIC_BLOCKS
-  assert(MAP_SIZE <= MAP_SIZE);
-  GlobalVariable *AFLIdPtr =
-      new GlobalVariable(M, PointerType::get(Int16Ty, 0), false,
-                         GlobalValue::ExternalLinkage, 0, "__afl_id_ptr");
+  GlobalVariable *AFLIdPtr;
+  if(!just_annotate) {
+      AFLIdPtr =
+          new GlobalVariable(M, PointerType::get(Int16Ty, 0), false,
+                             GlobalValue::ExternalLinkage, 0, "__afl_id_ptr");
+  }
 #else
   /* Get globals for the SHM region and the previous location. Note that
      __afl_prev_loc is thread-local. */
-
-  GlobalVariable *AFLMapPtr =
-      new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
-                         GlobalValue::ExternalLinkage, 0, "__afl_area_ptr");
-
-  GlobalVariable *AFLPrevLoc = new GlobalVariable(
-      M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
-      0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+  GlobalVariable *AFLMapPtr;
+  GlobalVariable *AFLPrevLoc;
+  if(!just_annotate) {
+    AFLMapPtr =
+        new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
+                           GlobalValue::ExternalLinkage, 0, "__afl_area_ptr");
+    AFLPrevLoc = new GlobalVariable(
+        M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
+        0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+  }
 #endif
 
   /* Instrument all the things! */
