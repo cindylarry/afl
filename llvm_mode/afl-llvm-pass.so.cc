@@ -35,6 +35,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/IR/CallSite.h"
 
 #define AFL_LOG_BASIC_BLOCKS
 
@@ -63,6 +64,28 @@ namespace {
 
 char AFLCoverage::ID = 0;
 
+static inline bool starts_with(const std::string& str, const std::string& prefix)
+{
+  if(prefix.length() > str.length()) { return false; }
+  return str.substr(0, prefix.length()) == prefix;
+}
+
+#include <iostream>
+static inline bool is_llvm_dbg_intrinsic(Instruction& instr)
+{
+  const bool is_call = instr.getOpcode() == Instruction::Invoke ||
+                       instr.getOpcode() == Instruction::Call;
+  if(!is_call) { return false; }
+
+  CallSite cs(&instr);
+  Constant* calledValue = cast<Constant>(cs.getCalledValue());
+  GlobalValue* globalValue = cast<GlobalValue>(calledValue);
+  Function *f = cast<Function>(globalValue);
+
+  const bool ret = f->isIntrinsic() &&
+                   starts_with(globalValue->getName().str(), "llvm.");
+  return ret;
+}
 
 bool AFLCoverage::runOnModule(Module &M) {
   if(!seeded) {
@@ -80,11 +103,11 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   LLVMContext &C = M.getContext();
 
+  IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
 #ifdef AFL_LOG_BASIC_BLOCKS
   IntegerType *Int16Ty = IntegerType::getInt16Ty(C);
   IntegerType *Int64Ty = IntegerType::getInt64Ty(C);
 #else
-  IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
   IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
 #endif
 
@@ -148,15 +171,25 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       unsigned int cur_loc = R(MAP_SIZE);
 
+      ConstantInt *CurLoc;
 #ifdef AFL_LOG_BASIC_BLOCKS
-      ConstantInt *CurLoc = ConstantInt::get(Int16Ty, cur_loc);
+      if(just_annotate) {
+        CurLoc = ConstantInt::get(Int32Ty, cur_loc);
+      } else {
+        CurLoc = ConstantInt::get(Int16Ty, cur_loc);
+      }
 #else
-      ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
+      CurLoc = ConstantInt::get(Int32Ty, cur_loc);
 #endif
 
       if(just_annotate) {
         auto meta_loc = MDNode::get(C, ConstantAsMetadata::get(CurLoc));
-        BB.getInstList().begin()->setMetadata("afl_cur_loc", meta_loc);
+        for(Instruction& instr : BB.getInstList()) {
+            if(!is_llvm_dbg_intrinsic(instr)) {
+              instr.setMetadata("afl_cur_loc", meta_loc);
+              break;
+            }
+        }
       } else {
 
 #ifdef AFL_LOG_BASIC_BLOCKS
