@@ -229,9 +229,9 @@ static params edit_params(u32 argc, char** argv, int make_bitcode) {
     // TODO: what if -c is already specified?
     cc_params[cc_par_cnt++] = "-c";
     cc_params[cc_par_cnt++] = "-emit-llvm";
-    cc_params[cc_par_cnt++] = "-fno-vectorize";
-    cc_params[cc_par_cnt++] = "-fno-slp-vectorize";
   }
+  cc_params[cc_par_cnt++] = "-fno-vectorize";
+  cc_params[cc_par_cnt++] = "-fno-slp-vectorize";
 
   if (getenv("AFL_NO_BUILTIN")) {
 
