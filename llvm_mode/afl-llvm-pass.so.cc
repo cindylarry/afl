@@ -37,7 +37,7 @@
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/IR/CallSite.h"
 
-#define AFL_LOG_BASIC_BLOCKS
+// #define AFL_LOG_BASIC_BLOCKS
 
 using namespace llvm;
 
