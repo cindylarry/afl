@@ -26,11 +26,15 @@
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 
+
+#define DEBUG1 fileonly
+
 #include "config.h"
 #include "types.h"
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
+#include <stdarg.h>
 
 #include <stdio.h>
 #include <unistd.h>
@@ -45,6 +49,7 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <limits.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -131,6 +136,8 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
+static u64 hit_bits[MAP_SIZE];        /* @LFB@ Hits to every bbt          */
+
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
@@ -166,6 +173,7 @@ EXP_ST u64 total_crashes,             /* Total number of crashes          */
            unique_hangs,              /* Hangs with unique signatures     */
            total_execs,               /* Total execve() calls             */
            start_time,                /* Unix start time (ms)             */
+           dump_time,                 /* Unix  time of last dump (ms)     */
            last_path_time,            /* Time for most recent path (ms)   */
            last_crash_time,           /* Time for most recent crash (ms)  */
            last_hang_time,            /* Time for most recent hang (ms)   */
@@ -268,6 +276,13 @@ static u32 a_extras_cnt;              /* Total number of tokens available */
 
 static u8* (*post_handler)(u8* buf, u32* len);
 
+/* @LFB@ Things about branches */
+
+static u32 MAX_RARE_BRANCHES = 256;
+static int rare_branch_exp = 4;        /* @LFB@ less than 2^rare_branch_exp is rare*/
+
+static int * blacklist; 
+
 /* Interesting values, as per config.h */
 
 static s8  interesting_8[]  = { INTERESTING_8 };
@@ -314,6 +329,20 @@ enum {
   /* 04 */ FAULT_NOINST,
   /* 05 */ FAULT_NOBITS
 };
+
+
+void fileonly (char const *fmt, ...) { 
+    static FILE *f = NULL;
+    if (f == NULL) {
+      u8 * fn = alloc_printf("%s/min-branch-fuzzing.log", out_dir);
+      f= fopen(fn, "w");
+      ck_free(fn);
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
 
 
 /* Get unix time in milliseconds */
@@ -764,12 +793,154 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+/* Returns an array of the num_rare_branches rarest branches */
+static int contains_id(int branch_id, int* branch_ids){
+  for (int i = 0; branch_ids[i] != -1; i++){
+    if (branch_ids[i] == branch_id) return 1;
+	}
+  return 0; 
+}
+
+/* you'll have to free the return pointer. */
+static int* get_lowest_hit_branch_ids(){
+  int * rare_branch_ids = malloc(sizeof(int)*MAX_RARE_BRANCHES);
+  int lowest_hob = INT_MAX;
+  int ret_list_size = 0;
+
+  for (int i = 0; (i < MAP_SIZE) && (ret_list_size < MAX_RARE_BRANCHES - 1); i++){
+    // ignore unseen branches. sparse array -> unlikely 
+    if (unlikely(hit_bits[i] > 0)){
+      if (contains_id(i, blacklist)) continue;
+      unsigned int long cur_hits = hit_bits[i];
+      int highest_order_bit = 0;
+      while(cur_hits >>=1)
+          highest_order_bit++;
+      lowest_hob = highest_order_bit < lowest_hob ? highest_order_bit : lowest_hob;
+     // DEBUG1("location %i was hit %i times, hob is %i, max is %i\n",i, hit_bits[i], highest_order_bit, rare_branch_exp);
+      if (highest_order_bit < rare_branch_exp){
+       // DEBUG1("hai I'm trying to insert?\n");
+        // if we are an order of magnitude smaller, prioritize the
+        // rarer branches
+        if (highest_order_bit < rare_branch_exp - 1){
+        //  DEBUG1("whahhhh?\n");
+          rare_branch_exp = highest_order_bit + 1;
+          // everything else that came before had way more hits
+          // than this one, so remove from list
+          ret_list_size = 0;
+        }
+        rare_branch_ids[ret_list_size] = i;
+        ret_list_size++;
+      }
+
+    }
+  }
+
+  if (ret_list_size == 0){
+    DEBUG1("Was returning list of size 0\n");
+    if (lowest_hob != INT_MAX) {
+      rare_branch_exp = lowest_hob + 1;
+      DEBUG1("Upped max exp to %i\n", rare_branch_exp);
+      free(rare_branch_ids);
+      return get_lowest_hit_branch_ids();
+    }
+  }
+
+  rare_branch_ids[ret_list_size] = -1;
+  return rare_branch_ids;
+
+}
+
+// checks if hits a rare branch with mini trace bits
+// returns 0 if no 
+static u32 * is_lfb_hit_mini(u8* trace_bits_mini){
+  int * rarest_branches = get_lowest_hit_branch_ids();
+  u32 * branch_ids = ck_alloc(sizeof(u32) * MAX_RARE_BRANCHES);
+  u32 * branch_cts = ck_alloc(sizeof(u32) * MAX_RARE_BRANCHES);
+  int min_hit_index = 0;
+
+  for (int i = 0; i < MAP_SIZE ; i ++){
+
+    //for (int j = 0; j < 8; j++){
+     // DEBUG1("trace bits mini addr: 0x%x\n", trace_bits_mini);
+      if (unlikely (trace_bits_mini[i >> 3]  & (1 <<(i & 7)) )){
+        int cur_index = i;
+        int is_rare = contains_id(cur_index, rarest_branches);
+        if (is_rare) {
+          // at loop initialization, set min_branch_hit properly
+          if (!min_hit_index) {
+            branch_cts[min_hit_index] = hit_bits[cur_index];
+            branch_ids[min_hit_index] = cur_index + 1;
+          }
+          // in general just check if we're a smaller branch 
+          // than the previously found min
+          int j;
+          for (j = 0 ; j < min_hit_index; j++){
+            if (hit_bits[cur_index] <= branch_cts[j]){
+              memmove(branch_cts + j + 1, branch_cts + j, min_hit_index -j);
+              memmove(branch_ids + j + 1, branch_ids + j, min_hit_index -j);
+              branch_cts[j] = hit_bits[cur_index];
+              branch_ids[j] = cur_index + 1;
+            }
+          }
+          // append at end
+          if (j == min_hit_index){
+            branch_cts[j] = hit_bits[cur_index];
+            // + 1 so we can distinguish 0 from other cases
+            branch_ids[j] = cur_index + 1;
+
+          }
+          // this is only incremented when is_rare holds, which should
+          // only happen a max of MAX_RARE_BRANCHES -1 times -- the last
+          // time we will never reenter so this is always < num_rare_branches
+          // at the top of the if statement
+          min_hit_index++;
+        }
+      }
+   // }
+  }
+  ck_free(branch_cts);
+  free(rarest_branches);
+  if (min_hit_index == 0){
+      ck_free(branch_ids);
+      branch_ids = NULL;
+  } else {
+    branch_ids[min_hit_index] = 0;
+  }
+  // 0 terminate the array
+  //DEBUG1("min_hit_index = %i\n", min_hit_index);
+  return branch_ids;
+
+
+}
+
+
+/* Compact trace bytes into a smaller bitmap. We effectively just drop the
+   count information here. This is called only sporadically, for some
+   new paths. */
+
+static void minimize_bits(u8* dst, u8* src) {
+
+  u32 i = 0;
+
+  while (i < MAP_SIZE) {
+
+    if (*(src++)) dst[i >> 3] |= 1 << (i & 7);
+    i++;
+
+  }
+
+}
 
 /* Append new test case to the queue. */
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
+
+  // @LFB@ added these for every queue entry
+  q->trace_mini = ck_alloc(MAP_SIZE >> 3);
+  minimize_bits(q->trace_mini, trace_bits);
+  // @End
 
   q->fname        = fname;
   q->len          = len;
@@ -1199,24 +1370,6 @@ static void remove_shm(void) {
 }
 
 
-/* Compact trace bytes into a smaller bitmap. We effectively just drop the
-   count information here. This is called only sporadically, for some
-   new paths. */
-
-static void minimize_bits(u8* dst, u8* src) {
-
-  u32 i = 0;
-
-  while (i < MAP_SIZE) {
-
-    if (*(src++)) dst[i >> 3] |= 1 << (i & 7);
-    i++;
-
-  }
-
-}
-
-
 /* When we bump into a new path, we call this to see if the path appears
    more "favorable" than any of the existing ones. The purpose of the
    "favorables" is to have a minimal set of paths that trigger all the bits
@@ -1249,8 +1402,11 @@ static void update_bitmap_score(struct queue_entry* q) {
             previous winner, discard its trace_bits[] if necessary. */
 
          if (!--top_rated[i]->tc_ref) {
-           ck_free(top_rated[i]->trace_mini);
-           top_rated[i]->trace_mini = 0;
+
+          // CAROTODO: find a better way to do this
+          // ck_free(top_rated[i]->trace_mini);
+          // top_rated[i]->trace_mini = 0;
+
          }
 
        }
@@ -2712,6 +2868,11 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
+
+    // @LFB@ added these for every queue entry
+    q->trace_mini = ck_alloc(MAP_SIZE >> 3);
+    minimize_bits(q->trace_mini, trace_bits);
+    // @End
     ck_free(use_mem);
 
     if (stop_soon) return;
@@ -3100,6 +3261,14 @@ static void write_crash_readme(void) {
 
 }
 
+/* increment hit bits by 1 for every element of trace_bits that has been hit.
+ effectively counts that one input has hit each element of trace_bits */
+static void increment_hit_bits(){
+  for (int i = 0; i < MAP_SIZE; i++){
+    if ((trace_bits[i] > 0) && (hit_bits[i] < ULONG_MAX))
+      hit_bits[i]++;
+  }
+}
 
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
@@ -3114,6 +3283,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
   if (fault == crash_mode) {
 
+
+    increment_hit_bits();
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
 
@@ -7628,6 +7799,11 @@ int main(int argc, char** argv) {
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
   char** use_argv;
 
+
+  // CAROTODO: change this possibly?
+  blacklist = malloc(sizeof(int)* 1024);
+  blacklist[0] = -1;
+
   struct timeval tv;
   struct timezone tz;
 
@@ -7879,7 +8055,7 @@ int main(int argc, char** argv) {
 
   check_binary(argv[optind]);
 
-  start_time = get_cur_time();
+  dump_time = start_time = get_cur_time();
 
   if (qemu_mode)
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
@@ -7909,8 +8085,23 @@ int main(int argc, char** argv) {
 
   while (1) {
 
-    u8 skipped_fuzz;
+    // after a certain time, dump rare branches
+    if(get_cur_time() - dump_time > 1 * 60 * 1000) {
+      dump_time = get_cur_time();
+      FILE *rare = fopen("rare", "w");
+      for (struct queue_entry *q = queue; q; q = q->next) {
+        u32 * min_branch_hits = is_lfb_hit_mini(q->trace_mini);
+        if (min_branch_hits) {
+          fprintf(rare, "input: %s\n", q->fname);
+          for (int i = 0; min_branch_hits[i]; ++i) {
+            fprintf(rare, "branch: %d\n", min_branch_hits[i] - 1);
+          }
+        }
+      }
+      fclose(rare);
+    }
 
+    u8 skipped_fuzz;
     cull_queue();
 
     if (!queue_cur) {
@@ -7989,6 +8180,7 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
+  free(blacklist);
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
