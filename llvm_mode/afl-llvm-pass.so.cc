@@ -159,9 +159,14 @@ bool AFLCoverage::runOnModule(Module &M) {
   /* Instrument all the things! */
 
   int inst_blocks = 0;
+  bool start = true;
 
   for (auto &F : M)
     for (auto &BB : F) {
+      if (start) {
+        start = false;
+        continue;
+      }
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
 
