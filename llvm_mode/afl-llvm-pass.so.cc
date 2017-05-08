@@ -87,6 +87,20 @@ static inline bool is_llvm_dbg_intrinsic(Instruction& instr)
   return ret;
 }
 
+static inline bool is_main(Function& f) {
+  return f.getName().str() == "main";
+}
+
+static inline bool is_jump(BasicBlock& BB) {
+  for(Instruction& instr : BB.getInstList()) {
+    if (instr.getOpcode() == Instruction::Br)
+      return true;
+    if (instr.getOpcode() != Instruction::PHI)
+      return false;
+  }
+  return false;
+}
+
 bool AFLCoverage::runOnModule(Module &M) {
   if(!seeded) {
     char* random_seed_str = getenv("AFL_RANDOM_SEED");
@@ -163,10 +177,12 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   for (auto &F : M)
     for (auto &BB : F) {
-      if (start) {
+      if (start && is_main(F)) {
         start = false;
         continue;
       }
+      if (is_jump(BB))
+        continue;
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
 
